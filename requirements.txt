@@ -1,0 +1,4 @@
+# Training only. Existing compatible PyTorch environments can be reused.
+numpy>=1.24,<3
+torch>=2.2,<3
+tqdm>=4.66,<5

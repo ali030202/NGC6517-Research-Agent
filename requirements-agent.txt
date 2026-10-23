@@ -1,0 +1,6 @@
+# Optional integrations; not needed by local status/planning/retrieval/reporting.
+openai>=1.50,<3
+pydantic>=2.8,<3
+fastmcp>=2.12,<3
+arxiv>=2.1,<3
+pypdf>=5,<7

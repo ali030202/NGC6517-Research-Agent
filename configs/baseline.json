@@ -1,0 +1,22 @@
+{
+  "train_csv": "splits1/train.csv",
+  "val_csv": "splits1/val.csv",
+  "test_csv": "splits1/test.csv",
+  "episodes": 500,
+  "eval_every": 50,
+  "eval_episodes": 100,
+  "val_random_eval_episodes": 100,
+  "test_episodes": 200,
+  "k_shot": 20,
+  "q_shot": 20,
+  "embed_dim": 128,
+  "dropout": 0.1,
+  "temperature": 10.0,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "seed": 2026,
+  "device": "",
+  "no_prior": false,
+  "auto_threshold": true,
+  "timeout_seconds": 14400
+}
