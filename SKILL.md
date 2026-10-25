@@ -7,6 +7,11 @@ description: Operate bounded, validation-driven NGC6517 few-shot experiments usi
 
 This file describes the project's software workflow for a host assistant.
 
+The recommended orchestration entrypoint is now `python agent.py workflow-start`.
+Use the returned workflow ID for status/resume/cancel/report, and the nested job
+ID for training logs or explicit final evaluation. Read `docs/LANGGRAPH.md` for
+checkpoint recovery semantics. Graph resumption is not optimizer continuation.
+
 1. Inspect data and capabilities before submitting an experiment.
 2. Prepare a plan with an explicit trial count, timeout and validation target.
 3. Start a managed background job; retain its ID and inspect state/logs as needed.

@@ -1,0 +1,3 @@
+# Stateful local research workflows. Python 3.10+; no API credentials needed.
+langgraph>=1.2.17,<2
+langgraph-checkpoint-sqlite>=3.1.2,<4

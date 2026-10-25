@@ -1,4 +1,5 @@
 # Optional integrations; not needed by local status/planning/retrieval/reporting.
+-r requirements-langgraph.txt
 openai>=1.50,<3
 pydantic>=2.8,<3
 fastmcp>=2.12,<3

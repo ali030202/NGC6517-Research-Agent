@@ -1,5 +1,7 @@
 # Research workflow
 
+0.3.0 推荐使用 LangGraph 编排的主流程：`workflow-start → workflow-status → workflow-report`。数据缺失或控制进程异常退出后，使用同一 ID 的 `workflow-resume`；停止时使用 `workflow-cancel`。节点与状态说明见 [LangGraph 文档](docs/LANGGRAPH.md)。旧训练任务接口继续保留。
+
 1. **Observe**：检查训练/验证清单和交集；搜索期间不打开测试内容。
 2. **Plan**：查看具有明确预算、配置、假设和停止条件的消融计划。
 3. **Act**：提交后台任务，冻结模型、训练器和数据加载器代码。

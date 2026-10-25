@@ -1,10 +1,13 @@
 # 运行、任务状态与恢复
 
+0.3.0 的 LangGraph 主入口、节点、数据暂停、检查点恢复与取消见 [工作流运行说明](LANGGRAPH.md)。本文其余命令仍适用于底层独立训练任务。工作流 ID 与训练任务 ID 不同。
+
 ## 1. 入口与依赖
 
 | 入口 | 命令 | 依赖 |
 |---|---|---|
 | 本地状态/规划/检索/报告 | `python agent.py ...` | 标准库 |
+| LangGraph 科研工作流 | `python agent.py workflow-start` | requirements-workflow.txt |
 | 训练 | `python agent.py train` | requirements.txt |
 | 网页控制台 | `python gradio_app.py` | requirements-ui.txt |
 | MCP | `python train_mcp_server.py` | requirements-agent.txt；训练工具另需训练依赖 |

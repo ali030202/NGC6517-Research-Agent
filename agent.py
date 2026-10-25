@@ -14,6 +14,16 @@ def main():
     parser.add_argument("--root", type=Path, default=ROOT)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("workflow-list")
+    workflow = commands.add_parser("workflow-start")
+    workflow.add_argument("--goal", default="脉冲星分类模型的可重复消融实验")
+    workflow.add_argument("--config", type=Path)
+    workflow.add_argument("--budget", type=int, default=3)
+    workflow.add_argument("--target-f1", type=float, default=0.9)
+    workflow.add_argument("--proposal")
+    for name in ("workflow-status", "workflow-resume", "workflow-cancel", "workflow-events", "workflow-report", "_workflow_worker"):
+        cmd = commands.add_parser(name)
+        cmd.add_argument("workflow_id")
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--include-test", action="store_true")
     inspect.add_argument("--config", type=Path)
@@ -48,7 +58,21 @@ def main():
         config = TrainConfig.from_dict(json.loads(config_path.read_text(encoding="utf-8-sig"))) if config_path else TrainConfig()
         command = args.command
         if command == "status":
-            result = {"capabilities": agent.capabilities(), "jobs": agent.store.jobs()}
+            result = {"capabilities": agent.capabilities(), "jobs": agent.store.jobs(), "workflows": agent.store.workflows()}
+        elif command == "workflow-list":
+            result = agent.store.workflows()
+        elif command == "workflow-start":
+            result = agent.workflow_start(args.goal, config, args.budget, args.target_f1, args.proposal)
+        elif command in {"workflow-status", "workflow-resume", "workflow-cancel"}:
+            result = getattr(agent, command.replace("-", "_"))(args.workflow_id)
+        elif command == "workflow-events":
+            result = agent.store.workflow_events(args.workflow_id)
+        elif command == "workflow-report":
+            result = agent.workflow_report(args.workflow_id)
+        elif command == "_workflow_worker":
+            from ngc_agent.workflow import run_workflow
+            run_workflow(args.root, args.workflow_id)
+            return
         elif command == "inspect":
             result = agent.inspect(config, args.include_test)
         elif command == "plan":

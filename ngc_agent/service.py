@@ -1,6 +1,7 @@
 """The same agent operations are used by CLI, Gradio and MCP."""
 from dataclasses import replace
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 from pathlib import Path
@@ -24,12 +25,18 @@ class Agent:
         self.code = CodeManager(self.root)
 
     def capabilities(self):
-        dependencies = {name: importlib.util.find_spec(name) is not None for name in ("torch", "numpy", "tqdm", "gradio", "fastmcp", "openai", "arxiv", "pypdf")}
+        dependencies = {name: importlib.util.find_spec(name) is not None for name in ("torch", "numpy", "tqdm", "gradio", "fastmcp", "openai", "arxiv", "pypdf", "langgraph")}
+        try:
+            sqlite_version = version("langgraph-checkpoint-sqlite")
+        except PackageNotFoundError:
+            sqlite_version = None
         llm = all(os.getenv(key) for key in ("AGENT_API_KEY", "AGENT_BASE_URL", "AGENT_MODEL")) or all(os.getenv(key) for key in ("DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL", "DASHSCOPE_MODEL"))
         return {
             "local_core": True, "llm": bool(llm and dependencies["openai"]),
             "llm_state": "available" if llm and dependencies["openai"] else "deferred: API credentials/model not configured",
             "dependencies": dependencies, "python": sys.executable,
+            "langgraph_workflow": bool(dependencies["langgraph"] and sqlite_version),
+            "langgraph_sqlite_version": sqlite_version,
             "selection_metric": "val_f1", "root": str(self.root),
         }
 
@@ -60,7 +67,16 @@ class Agent:
             "limits": ["目标值不保证达到", "验证集参与搜索，最终性能只在冻结方案后单独评估测试集", "默认每轮保持除消融变量外的设置一致"],
         }
 
-    def _submit(self, kind, payload, source_run=None, proposal_id=None):
+    def _submit(self, kind, payload, source_run=None, proposal_id=None,
+                request_key=None, workflow_id=None, frozen_root=None):
+        if request_key:
+            existing = self.store.find_request(request_key)
+            if existing:
+                if (existing["kind"], existing["config"], existing["proposal_id"], existing["workflow_id"]) != (kind, payload, proposal_id, workflow_id):
+                    raise ValueError("Idempotent request has different inputs")
+                if existing["state"] == "queued" and not process_alive(existing["worker_pid"]):
+                    return self._launch_job(existing["id"])
+                return existing
         for previous in self.store.jobs(1000):
             if previous.get("child_pid") and process_alive(previous["child_pid"]):
                 raise ValueError("已有训练子进程运行；请等待完成或取消。工作进程异常退出时，需先结束残留训练进程。")
@@ -83,20 +99,34 @@ class Agent:
         folder = self.run_directory(job_id)
         folder.mkdir(parents=True)
         try:
-            snapshot_root = self.run_directory(source_run) / "source" if kind == "evaluate" else self.root
+            if frozen_root:
+                snapshot_root = Path(frozen_root)
+            elif kind == "evaluate":
+                snapshot_root = self.run_directory(source_run) / "source"
+            else:
+                snapshot_root = self.root
             _, hashes = snapshot(snapshot_root, folder, source)
             if kind == "evaluate" and hashes["model_proto.py"] != original["result"]["model_sha256"]:
                 raise ValueError("Source model checksum mismatch")
             atomic_text(folder / "manifest.json", json.dumps({
                 "id": job_id, "kind": kind, "created_at": now(), "config": payload,
                 "source_run": source_run, "proposal_id": proposal_id,
+                "request_key": request_key, "workflow_id": workflow_id,
                 "source_sha256": hashes, "selection_metric": "val_f1",
             }, ensure_ascii=False, indent=2))
-            self.store.create(job_id, kind, payload, source_run=source_run, proposal_id=proposal_id)
+            self.store.create(job_id, kind, payload, source_run=source_run, proposal_id=proposal_id,
+                              request_key=request_key, workflow_id=workflow_id)
         except Exception:
             # Keep a failed preparation manifest for inspection; no job or process
             # is created when another job already holds the active slot.
             raise
+        return self._launch_job(job_id)
+
+    def _launch_job(self, job_id):
+        job = self.store.get(job_id)
+        if job["state"] != "queued":
+            return job
+        folder = self.run_directory(job_id)
         environment = os.environ.copy()
         environment.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         try:
@@ -106,10 +136,10 @@ class Agent:
                     cwd=self.root, env=environment, stdin=subprocess.DEVNULL,
                     stdout=log, stderr=subprocess.STDOUT, **process_options(),
                 )
-            self.store.update(job_id, worker_pid=process.pid)
         except Exception as exc:
-            self.store.update(job_id, state="failed", error=f"Worker launch failed: {exc}")
+            self.store.record_job_launch(job_id, job["worker_pid"], error=f"Worker launch failed: {exc}")
             raise
+        self.store.record_job_launch(job_id, job["worker_pid"], pid=process.pid)
         return self.store.get(job_id)
 
     def submit(self, config=None, proposal_id=None):
@@ -117,6 +147,31 @@ class Agent:
 
     def run_plan(self, config=None, budget=3, target_f1=0.9, proposal_id=None):
         return self._submit("search", self.plan(config, budget, target_f1), proposal_id=proposal_id)
+
+    def workflow_start(self, goal="脉冲星分类模型的可重复消融实验", config=None,
+                       budget=3, target_f1=0.9, proposal_id=None):
+        from .workflow import ResearchWorkflow
+        return ResearchWorkflow(self).start(goal, config or TrainConfig(), budget, target_f1, proposal_id)
+
+    def workflow_status(self, workflow_id):
+        from .workflow import ResearchWorkflow
+        return ResearchWorkflow(self).status(workflow_id)
+
+    def workflow_resume(self, workflow_id):
+        from .workflow import ResearchWorkflow
+        return ResearchWorkflow(self).resume(workflow_id)
+
+    def workflow_cancel(self, workflow_id):
+        from .workflow import ResearchWorkflow
+        return ResearchWorkflow(self).cancel(workflow_id)
+
+    def workflow_report(self, workflow_id):
+        from .workflow import ResearchWorkflow
+        self.store.workflow(workflow_id)
+        path = ResearchWorkflow(self).folder(workflow_id) / "report.md"
+        if not path.is_file():
+            raise ValueError("工作流报告尚未生成，请先查看工作流状态。")
+        return {"path": str(path), "markdown": path.read_text(encoding="utf-8")}
 
     def evaluate(self, job_id):
         original = self.store.get(job_id)
@@ -215,7 +270,14 @@ class Agent:
         text = message.strip()
         command, _, argument = text.partition(" ")
         if text in {"帮助", "help", "/help"}:
-            reply = "可用：状态 /status；数据 /data；计划 /plan；训练 /train；自动实验 /run-plan；报告 /report；/search 关键词；/logs 任务ID；/cancel 任务ID。训练和自动实验会启动本地计算任务。/propose 改进方向 仅在大模型接入后生成代码提案。"
+            reply = "可用：状态 /status；数据 /data；计划 /plan；训练 /train；自动实验 /run-plan；报告 /report；/search 关键词；/logs 任务ID；/cancel 任务ID。LangGraph：/workflow 研究目标；/workflow-status 工作流ID；/workflow-resume 工作流ID；/workflow-cancel 工作流ID。训练和工作流会启动本地计算任务。/propose 改进方向 仅在大模型接入后生成代码提案。"
+        elif command == "/workflow":
+            reply = json.dumps(self.workflow_start(argument or "脉冲星分类消融实验"), ensure_ascii=False, indent=2)
+        elif command in {"/workflow-status", "/workflow-resume", "/workflow-cancel"}:
+            if not argument.strip():
+                raise ValueError("请提供工作流 ID；它与训练任务 ID 不同")
+            operation = command[1:].replace("-", "_")
+            reply = json.dumps(getattr(self, operation)(argument.strip()), ensure_ascii=False, indent=2)
         elif text in {"状态", "/status"}:
             reply = json.dumps({"capabilities": self.capabilities(), "jobs": self.store.jobs(10)}, ensure_ascii=False, indent=2)
         elif text in {"数据", "/data"}:

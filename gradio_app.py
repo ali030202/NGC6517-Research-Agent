@@ -93,6 +93,37 @@ def create_app(root=ROOT):
         result = agent.report()
         return result["markdown"], result["path"]
 
+    def start_workflow(goal, config_text, budget, target):
+        try:
+            result = agent.workflow_start(goal, TrainConfig.from_dict(json.loads(config_text)), int(budget), float(target))
+            return result["workflow_id"], result, "工作流已提交，后台会依次安排实验并保存报告；关闭网页后仍可继续。"
+        except Exception as exc:
+            return gr.skip(), {"error": str(exc)}, f"无法启动：{exc}"
+
+    def workflow_action(workflow_id, operation):
+        try:
+            if not workflow_id.strip():
+                raise ValueError("请先填写工作流 ID")
+            result = getattr(agent, "workflow_" + operation)(workflow_id.strip())
+            return result, f"当前状态：{result['state']}"
+        except Exception as exc:
+            return {"error": str(exc)}, str(exc)
+
+    def workflow_poll(workflow_id):
+        if not workflow_id.strip():
+            return {"workflows": agent.store.workflows(10)}
+        try:
+            return agent.workflow_status(workflow_id.strip())
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def workflow_report(workflow_id):
+        try:
+            result = agent.workflow_report(workflow_id.strip())
+            return result["markdown"], result["path"]
+        except Exception as exc:
+            return str(exc), None
+
     with gr.Blocks(title="NGC6517 Research Agent") as demo:
         gr.Markdown("# NGC6517 科研智能体\n本地实验、资料检索、模型提案和证据报告。API 凭据配置暂缓；本地功能可直接使用。")
         with gr.Row():
@@ -102,6 +133,24 @@ def create_app(root=ROOT):
             recover = gr.Button("标记已中断任务")
         notice = gr.Markdown()
         with gr.Tabs():
+            with gr.Tab("科研工作流"):
+                gr.Markdown("输入研究目标，工作流会检查数据、检索资料、安排对照实验并汇总报告。数据未就绪时先暂停；准备好后可继续。API 配置暂缓，本地流程无需密钥。")
+                workflow_goal = gr.Textbox(label="研究目标", value="比较先验门控与正则化对脉冲星分类的影响")
+                workflow_config = gr.Code(value=baseline, language="json", label="训练配置")
+                with gr.Row():
+                    workflow_budget = gr.Slider(1, 10, value=3, step=1, label="最多实验次数")
+                    workflow_target = gr.Slider(0, 1, value=0.9, step=0.01, label="验证 F1 停止目标")
+                workflow_start = gr.Button("启动科研工作流", variant="primary")
+                workflow_id = gr.Textbox(label="工作流 ID", placeholder="启动后自动填入，也可粘贴历史工作流 ID；与训练任务 ID 不同")
+                with gr.Row():
+                    workflow_refresh = gr.Button("刷新进度")
+                    workflow_resume = gr.Button("恢复工作流")
+                    workflow_cancel = gr.Button("取消工作流")
+                    workflow_export = gr.Button("查看工作流报告")
+                workflow_notice = gr.Markdown()
+                workflow_state = gr.JSON(label="工作流进度与当前训练任务")
+                workflow_report_md = gr.Markdown()
+                workflow_report_file = gr.File(label="下载工作流报告", interactive=False)
             with gr.Tab("对话入口"):
                 chatbot = gr.Chatbot(type="messages", label="本地智能体", height=430)
                 message = gr.Textbox(label="输入命令", placeholder="帮助、状态、计划、/search 多尺度卷积")
@@ -147,6 +196,12 @@ def create_app(root=ROOT):
                 report_md = gr.Markdown()
                 report_file = gr.File(label="下载 Markdown 报告", interactive=False)
         timer = gr.Timer(3)
+        workflow_start.click(start_workflow, [workflow_goal, workflow_config, workflow_budget, workflow_target], [workflow_id, workflow_state, workflow_notice])
+        workflow_refresh.click(workflow_poll, workflow_id, workflow_state)
+        workflow_resume.click(lambda value: workflow_action(value, "resume"), workflow_id, [workflow_state, workflow_notice])
+        workflow_cancel.click(lambda value: workflow_action(value, "cancel"), workflow_id, [workflow_state, workflow_notice])
+        workflow_export.click(workflow_report, workflow_id, [workflow_report_md, workflow_report_file])
+        timer.tick(workflow_poll, workflow_id, workflow_state, queue=False)
         for event in (send.click, message.submit):
             event(chat, [message, chatbot, job_id], [message, chatbot, job_id])
         inspect_button.click(inspect, config_text, inspect_output)

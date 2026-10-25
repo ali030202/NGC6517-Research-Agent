@@ -1,4 +1,4 @@
-"""Public workflow facade. The default research loop runs without an LLM."""
+"""Public LangGraph workflow facade. Local research runs without an LLM."""
 from ngc_agent.service import Agent
 
 
@@ -8,9 +8,9 @@ def run_ai_scientist(target_f1=0.9, max_ideas=3, max_experiment_runs=1,
     if not 1 <= budget <= 10:
         raise ValueError("The total local experiment budget must be in [1,10]")
     agent = Agent()
-    job = agent.run_plan(budget=budget, target_f1=target_f1)
-    return {"status": "submitted", "job_id": job["id"],
-            "plan": job["config"], "report_command": f"python agent.py report --job-id {job['id']}",
+    workflow = agent.workflow_start(budget=budget, target_f1=target_f1)
+    return {"status": "submitted", "workflow_id": workflow["workflow_id"],
+            "workflow": workflow, "report_command": f"python agent.py workflow-report {workflow['workflow_id']}",
             "writeup": "Optional LLM drafting is separate; deterministic reports are always available",
             "review": "Optional LLM review is separate and does not establish scientific validity"}
 

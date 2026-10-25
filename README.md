@@ -2,12 +2,14 @@
 
 面向 **NGC6517 脉冲星 / 射频干扰（RFI）二分类**的本地科研智能体：实验规划、训练执行、验证反馈、本地检索、模型代码提案和实验报告。
 
-本项目包含两层：**科研智能体**组织研究流程；**多模态 ProtoNet**分类样本。默认本地模式无 API、Token、向量数据库或外部模型下载。大模型生成代码、假设与论文草稿作为可选扩展，本次暂缓凭据配置。
+本项目包含两层：**基于 LangGraph 的科研智能体**组织研究流程；**多模态 ProtoNet**分类样本。LangGraph 主流程完成数据检查、资料检索、规则实验规划、训练调度、验证反馈与报告生成，无需 API、Token 或向量数据库。大模型生成代码、假设与论文草稿作为可选扩展，凭据配置暂缓。
 
-> 当前版本为工程重构版。未运行新训练、GPU 基准或端到端运行测试，不提供重构后的准确率或 F1 承诺。仓库不包含数据、权重、实际运行日志、密钥、论文 PDF 或提取全文。
+当前版本为 **0.3.0 LangGraph 工作流版**。本次改造进行了源代码静态检查，未新增或运行测试、模型训练、GPU 基准或端到端验证。仓库只发布源码、文档和配置模板，不包含数据、权重、实际运行日志、密钥、论文 PDF 或提取全文。
 
 ## 阅读导航
 
+- [LangGraph 主流程与启动方式](#langgraph-主流程)
+- [LangGraph 节点职责与恢复说明](docs/LANGGRAPH.md)
 - [系统定位：主控、研究角色和工具](#系统定位)
 - [智能体角色总览与详细职责](#智能体角色与职责)
 - [智能体之间如何协作](#智能体之间如何协作)
@@ -16,6 +18,39 @@
 - [快速使用](#快速使用) · [数据放置](#数据放置)
 - [代码结构](#代码结构) · [MCP 与可选大模型](#mcp-与可选大模型)
 - [迁移与边界](#迁移与边界)
+
+## LangGraph 主流程
+
+使用 `StateGraph` 定义节点与条件分支，使用 `SqliteSaver` 保存检查点，训练交给独立后台任务。正常运行时自动等待训练并继续下一轮，关闭网页后也可继续。没有配置大模型 API 时，使用明确的本地规则制定消融计划。
+
+```mermaid
+flowchart TD
+    A[检查训练和验证数据] --> B{数据就绪?}
+    B -- 否 --> C[interrupt 暂停并保存检查点]
+    C -- 准备好后恢复 --> A
+    B -- 是 --> D[检索本地知识]
+    D --> E[制定规则消融计划]
+    E --> F{目标或预算达成?}
+    F -- 否 --> G[幂等提交训练]
+    G --> H[等待并分析结果]
+    H --> F
+    F -- 是 或取消超时 --> I[生成实验报告]
+```
+
+Python 3.10+，在已有 PyTorch 环境安装依赖后启动：
+
+```bash
+python -m pip install -r requirements-workflow.txt
+python agent.py workflow-start --goal "比较先验门控和正则化对脉冲星分类的影响" --config configs/baseline.json --budget 3
+python agent.py workflow-status WORKFLOW_ID
+python agent.py workflow-resume WORKFLOW_ID
+python agent.py workflow-cancel WORKFLOW_ID
+python agent.py workflow-report WORKFLOW_ID
+```
+
+启动返回 `workflow_id`；它与每轮训练的任务 ID 不同。数据未就绪时暂停，准备好后恢复同一工作流。图恢复复用已提交任务，不等于恢复训练优化器；被中断的训练保留中断记录。目标文本用于记录与检索，不自动生成模型改动。最终测试仍需显式提交。
+
+网页“科研工作流”页和 MCP 工作流工具复用同一服务。检查点、源码快照、日志和报告保存在被 Git 忽略的 `.agent/`。详细节点、恢复、超时和取消语义见 [LangGraph 说明](docs/LANGGRAPH.md)。旧 `train`、`run-plan` 与提案接口继续保留。
 
 ## 系统定位
 
@@ -31,7 +66,7 @@
 | 工具与执行基础设施 | 检查文件、训练模型、检索资料、保存证据、展示页面 | `data`、`runner`、`Store`、`CodeManager`、知识检索、CLI/Gradio/MCP |
 | 被研究的分类模型 | 从观测数据提取特征，区分 Pulsar 与 RFI | `NGC6517Encoder` 和原型分类函数 |
 
-默认入口运行本地规则计划与受管理的实验；LLM 研究角色已有模块入口，等待接入后按需调用。分类网络是实验对象，不承担科研主控或论文评审职责。
+推荐入口使用 LangGraph 编排本地规则计划与受管理的实验；LLM 研究角色已有模块入口，等待接入后按需调用。分类网络是实验对象，不承担科研主控或论文评审职责。
 
 ## 智能体角色与职责
 
@@ -172,7 +207,7 @@ Idea 提出假设
 
 `ai_scientist_pipeline.py` 的当前行为需特别说明：
 
-- `run_ai_scientist()` 提交本地规则实验计划，返回任务 ID 和报告命令。
+- `run_ai_scientist()` 启动 LangGraph 工作流，返回 `workflow_id`、当前状态和报告命令。此前依赖 `job_id` 的调用方应迁移到工作流 ID，单次训练仍使用任务 ID。
 - `do_idea()` 调用可选的假设驱动实验模块，并导出记录报告。
 - 保留的 `enable_writeup`、`enable_review` 参数目前没有自动调度论文写作或评审；需要显式调用对应角色函数。
 - `perform_review()` 内部会聚合多位模拟审稿人的意见并调用 `get_meta_review()`；生成修订稿仍需显式调用 `perform_improvement()`。
@@ -342,6 +377,7 @@ agent.py                    # 命令行
 ngc_agent/
   config.py                 # 参数验证与命令构建
   service.py                # 统一服务、规划、提案与报告
+  workflow.py               # LangGraph 状态图、检查点与后台科研工作流
   runner.py                 # 后台训练、预算循环、取消和超时
   store.py                  # SQLite 任务与事件
   data.py                   # 无训练依赖的清单检查
@@ -372,6 +408,7 @@ MCP 使用 stdio，应由客户端启动管理；训练日志写入任务文件�
 
 | 工具组 | 工具名称 |
 |---|---|
+| LangGraph 工作流 | `start_research_workflow`、`list_research_workflows`、`get_research_workflow`、`resume_research_workflow`、`cancel_research_workflow`、`get_research_workflow_events`、`export_research_workflow_report` |
 | 观察与规划 | `agent_status`、`inspect_data`、`plan_experiments` |
 | 实验执行 | `start_training`、`start_experiment_plan`、`evaluate_frozen_model` |
 | 任务控制 | `get_job`、`get_job_logs`、`get_job_events`、`cancel_job`、`retry_job`、`recover_interrupted_job` |

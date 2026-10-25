@@ -39,6 +39,16 @@ def process_alive(pid):
         finally:
             kernel.CloseHandle(handle)
     try:
+        # A detached worker can remain a zombie until its long-lived UI parent
+        # reaps it. Such a PID cannot make progress and must not block recovery.
+        status = Path(f"/proc/{int(pid)}/stat")
+        if status.is_file():
+            try:
+                state = status.read_text().rsplit(")", 1)[1].split()[0]
+                if state in {"Z", "X"}:
+                    return False
+            except (OSError, IndexError):
+                pass
         os.kill(int(pid), 0)
         return True
     except ProcessLookupError:
